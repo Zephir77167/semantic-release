@@ -1,4 +1,4 @@
-const {template, isFunction} = require('lodash');
+const {template, isPlainObject, castArray, isFunction} = require('lodash');
 const marked = require('marked');
 const TerminalRenderer = require('marked-terminal');
 const envCi = require('env-ci');
@@ -12,10 +12,10 @@ const getLastRelease = require('./lib/get-last-release');
 const logger = require('./lib/logger');
 const {unshallow, gitHead: getGitHead, tag, push, deleteTag} = require('./lib/git');
 
-async function run(opts) {
+marked.setOptions({renderer: new TerminalRenderer()});
+
+async function run(options, plugins) {
   const {isCi, branch, isPr} = envCi();
-  const config = await getConfig(opts, logger);
-  const {plugins, options} = config;
 
   if (!isCi && !options.dryRun && !options.noCi) {
     logger.log('This run was not triggered in a known CI environment, running in dry-run mode.');
@@ -64,7 +64,6 @@ async function run(opts) {
   if (options.dryRun) {
     logger.log('Call plugin %s', 'generate-notes');
     const notes = await plugins.generateNotes(generateNotesParam);
-    marked.setOptions({renderer: new TerminalRenderer()});
     logger.log('Release note for version %s:\n', nextRelease.version);
     process.stdout.write(`${marked(notes)}\n`);
   } else {
@@ -77,25 +76,34 @@ async function run(opts) {
     await push(options.repositoryUrl, branch);
 
     logger.log('Call plugin %s', 'publish');
-    await plugins.publish({options, logger, lastRelease, commits, nextRelease}, false, async prevInput => {
-      const newGitHead = await getGitHead();
-      // If previous publish plugin has created a commit (gitHead changed)
-      if (prevInput.nextRelease.gitHead !== newGitHead) {
-        // Delete the previously created tag
-        await deleteTag(options.repositoryUrl, nextRelease.gitTag);
-        // Recreate the tag, referencing the new gitHead
-        logger.log('Create tag %s', nextRelease.gitTag);
-        await tag(nextRelease.gitTag);
-        await push(options.repositoryUrl, branch);
+    const releases = await plugins.publish(
+      {options, logger, lastRelease, commits, nextRelease},
+      false,
+      async lastResult => {
+        const newGitHead = await getGitHead();
+        // If previous publish plugin has created a commit (gitHead changed)
+        if (lastResult.nextRelease.gitHead !== newGitHead) {
+          // Delete the previously created tag
+          await deleteTag(options.repositoryUrl, nextRelease.gitTag);
+          // Recreate the tag, referencing the new gitHead
+          logger.log('Create tag %s', nextRelease.gitTag);
+          await tag(nextRelease.gitTag);
+          await push(options.repositoryUrl, branch);
 
-        nextRelease.gitHead = newGitHead;
-        // Regenerate the release notes
-        logger.log('Call plugin %s', 'generateNotes');
-        nextRelease.notes = await plugins.generateNotes(generateNotesParam);
-      }
-      // Call the next publish plugin with the updated `nextRelease`
-      return {options, logger, lastRelease, commits, nextRelease};
-    });
+          nextRelease.gitHead = newGitHead;
+          // Regenerate the release notes
+          logger.log('Call plugin %s', 'generateNotes');
+          nextRelease.notes = await plugins.generateNotes(generateNotesParam);
+        }
+        // Call the next publish plugin with the updated `nextRelease`
+        return {options, logger, lastRelease, commits, nextRelease};
+      },
+      // Add nextRelease and plugin properties to published release
+      (release, step) => ({...(isPlainObject(release) ? release : {}), ...nextRelease, ...step})
+    );
+
+    await plugins.success({options, logger, lastRelease, commits, nextRelease, releases: castArray(releases)}, true);
+
     logger.log('Published release: %s', nextRelease.version);
   }
   return true;
@@ -104,14 +112,30 @@ async function run(opts) {
 module.exports = async opts => {
   const unhook = hookStd({silent: false}, hideSensitive);
   try {
-    const result = await run(opts);
-    unhook();
-    return result;
+    const config = await getConfig(opts, logger);
+    const {plugins, options} = config;
+    try {
+      const result = await run(options, plugins);
+      unhook();
+      return result;
+    } catch (err) {
+      if (!options.dryRun) {
+        await plugins.fail({
+          options,
+          logger,
+          errors: (err && isFunction(err[Symbol.iterator]) ? [...err] : [err]).filter(error => error.semanticRelease),
+        });
+      }
+      throw err;
+    }
   } catch (err) {
     const errors = err && isFunction(err[Symbol.iterator]) ? [...err].sort(error => !error.semanticRelease) : [err];
     for (const error of errors) {
       if (error.semanticRelease) {
         logger.log(`%s ${error.message}`, error.code);
+        if (error.details) {
+          process.stdout.write(`${marked(error.details)}\n`);
+        }
       } else {
         logger.error('An error occurred while running semantic-release: %O', error);
       }

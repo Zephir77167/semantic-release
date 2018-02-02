@@ -20,8 +20,8 @@
   ],
   "dependencies": {
     "@semantic-release/commit-analyzer": "^5.0.0",
-    "@semantic-release/error": "^2.1.0",
-    "@semantic-release/github": "^4.0.2",
+    "@semantic-release/error": "semantic-release/error#message-details",
+    "@semantic-release/github": "semantic-release/github#success-fail",
     "@semantic-release/npm": "^3.0.0",
     "@semantic-release/release-notes-generator": "^6.0.0",
     "aggregate-error": "^1.0.0",
@@ -79,7 +79,7 @@
     "index.js",
     "cli.js"
   ],
-  "homepage": "https://github.com/semantic-release/semantic-release#readme",
+  "homepage": "https://github.com/semantic-release/semantic-release",
   "keywords": [
     "author",
     "automation",
